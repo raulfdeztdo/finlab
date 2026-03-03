@@ -48,8 +48,8 @@ COPY --from=builder /app/node_modules/prebuild-install ./node_modules/prebuild-i
 COPY --from=builder /app/node_modules/bcryptjs ./node_modules/bcryptjs
 COPY --from=builder /app/node_modules/uuid ./node_modules/uuid
 
-# Create data directory for SQLite
-RUN mkdir -p /app/data && chown -R nextjs:nodejs /app/data
+# Create data directories for SQLite, CSV and cache
+RUN mkdir -p /app/data/db /app/data/csv /app/data/cache && chown -R nextjs:nodejs /app/data
 
 USER nextjs
 

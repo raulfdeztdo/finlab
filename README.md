@@ -84,7 +84,8 @@ finlab/
 │   ├── app/
 │   │   ├── api/
 │   │   │   ├── auth/route.ts          # Login / logout / check sesión
-│   │   │   ├── market-data/route.ts   # Endpoint principal de análisis
+│   │   │   ├── market-data/route.ts   # Endpoint principal de análisis + escritura CSV
+│   │   │   ├── backtesting/route.ts   # Endpoint de backtesting semanal
 │   │   │   ├── users/route.ts         # CRUD usuarios (admin)
 │   │   │   └── history/route.ts       # Historial de señales
 │   │   ├── login/page.tsx             # Página de login
@@ -99,6 +100,7 @@ finlab/
 │   │   ├── MTAPanel.tsx               # Alineación multi-temporal
 │   │   ├── TimeframeTable.tsx         # Tabla de indicadores por temporalidad
 │   │   ├── ScalpingRecommendations.tsx# Tarjetas de recomendaciones
+│   │   ├── BacktestingPanel.tsx       # Panel de backtesting semanal
 │   │   ├── SessionClock.tsx           # Sesión activa y próxima actualización
 │   │   ├── ScheduleConfig.tsx         # Modal configuración de horario
 │   │   ├── HistoryPanel.tsx           # Historial de acciones sugeridas
@@ -109,6 +111,7 @@ finlab/
 │       ├── config/
 │       │   ├── indicators.ts          # Parámetros de indicadores y schedule
 │       │   └── symbols.ts             # Definición de símbolos
+│       ├── csv/index.ts               # Registro semanal CSV + motor de backtesting
 │       ├── db/index.ts                # SQLite singleton y operaciones de DB
 │       ├── indicators/calculator.ts   # Cálculo de todos los indicadores
 │       ├── signals/scoring.ts         # Pipeline completo de análisis
@@ -116,8 +119,10 @@ finlab/
 ├── public/
 │   ├── finlab-logo.svg                # Logo horizontal (README / og)
 │   └── favicon.svg                    # Favicon SVG
-├── data/                              # SQLite DB (excluido de git)
-│   └── finlab.db
+├── data/                              # Datos persistentes (excluido de git)
+│   ├── db/finlab.db                   # Base de datos SQLite
+│   ├── csv/                           # CSVs semanales de trades y velas
+│   └── cache/                         # Caché de respuestas TwelveData
 ├── Dockerfile
 ├── docker-compose.yml
 └── .env.example
@@ -152,12 +157,6 @@ TZ=Europe/Madrid
 docker compose build --no-cache && docker compose up -d
 ```
 
-> Si has cambiado el schema de la base de datos respecto a una versión anterior, borra el archivo `data/finlab.db` antes de reconstruir:
-> ```bash
-> rm -f data/finlab.db
-> docker compose build --no-cache && docker compose up -d
-> ```
-
 ### 3. Acceder
 
 Abre [http://localhost:3000](http://localhost:3000) en el navegador.
@@ -167,9 +166,64 @@ Credenciales por defecto:
 | Campo | Valor |
 |---|---|
 | Usuario | `admin` |
-| Contraseña | `password` |
+| Contraseña | `exIqex34` |
 
 > Cambia la contraseña desde el panel de gestión de usuarios una vez dentro.
+
+---
+
+## Persistencia de datos en Docker
+
+La aplicación usa **tres volúmenes Docker** para que los datos sobrevivan entre rebuilds:
+
+| Volumen | Ruta en contenedor | Contenido |
+|---|---|---|
+| `finlab-db` | `/app/data/db` | Base de datos SQLite (`finlab.db`) |
+| `finlab-csv` | `/app/data/csv` | CSVs semanales de trades y velas 5min |
+| `finlab-cache` | `/app/data/cache` | Caché de respuestas de TwelveData |
+
+Los volúmenes se crean vacíos la **primera vez** y se remontan con sus datos en todos los rebuilds posteriores. Un `docker compose build --no-cache && docker compose up -d` **nunca borra los datos**.
+
+### Rebuild normal (mantiene todos los datos)
+
+```bash
+docker compose build --no-cache && docker compose up -d
+```
+
+### Borrar solo la caché de TwelveData
+
+```bash
+docker volume rm finlab_finlab-cache
+docker compose up -d
+```
+
+### Borrar solo los CSVs de backtesting
+
+```bash
+docker volume rm finlab_finlab-csv
+docker compose up -d
+```
+
+### Borrar la base de datos (usuarios, sesiones, historial)
+
+> Necesario si cambias el schema de la DB entre versiones.
+
+```bash
+docker compose down
+docker volume rm finlab_finlab-db
+docker compose up -d
+```
+
+La app recreará la DB con el schema nuevo y el usuario admin por defecto.
+
+### Borrar todos los datos persistentes
+
+```bash
+docker compose down -v
+docker compose up -d
+```
+
+> El flag `-v` en `docker compose down` elimina **todos** los volúmenes asociados al proyecto.
 
 ---
 
@@ -216,7 +270,7 @@ El intervalo de auto-refresh es de **15 minutos**, sincronizado con el reloj (ac
 
 ## Base de datos
 
-La base de datos SQLite se crea automáticamente en `data/finlab.db` al iniciar la aplicación. Contiene cuatro tablas:
+La base de datos SQLite se crea automáticamente en `data/db/finlab.db` al iniciar la aplicación. Contiene cuatro tablas:
 
 | Tabla | Contenido |
 |---|---|
@@ -224,6 +278,17 @@ La base de datos SQLite se crea automáticamente en `data/finlab.db` al iniciar 
 | `sessions` | Tokens de sesión activos |
 | `api_requests` | Historial de todas las peticiones realizadas a TwelveData |
 | `suggested_actions` | Recomendaciones de scalping generadas en cada análisis |
+
+## Backtesting semanal
+
+Cada análisis exitoso escribe automáticamente dos CSVs en `data/csv/`:
+
+| Fichero | Contenido |
+|---|---|
+| `trades_YYYY-Www.csv` | Operaciones detectadas (entrada, SL, TP, confianza, dirección...) |
+| `candles_5min_YYYY-Www.csv` | Velas 5min acumuladas de la semana (deduplicadas) |
+
+El panel de **Backtesting Semanal** en el dashboard evalúa automáticamente cada trade contra las velas 5min posteriores a la señal, calculando win rate, PnL, desglose por dirección y por tipo de operación. Los resultados también están disponibles vía API en `/api/backtesting?week=YYYY-Www`.
 
 ---
 
