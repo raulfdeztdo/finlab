@@ -112,12 +112,20 @@ export async function fetchOHLCV(
   timeframe: Timeframe,
   forceRefresh = false
 ): Promise<OHLCV[]> {
-  // Check cache first
-  if (!forceRefresh) {
-    const cached = getCachedData(symbol, timeframe);
-    if (cached) {
-      console.log(`[TwelveData] Cache hit: ${symbol} ${timeframe}`);
-      return cached;
+  // Check cache first (skip only if forceRefresh AND cache is older than 5 min)
+  const existingCache = getCachedData(symbol, timeframe);
+  if (!forceRefresh && existingCache) {
+    console.log(`[TwelveData] Cache hit: ${symbol} ${timeframe}`);
+    return existingCache;
+  }
+  // On forceRefresh: if the cache is very fresh (< 5 min old), skip the API call
+  // This prevents hammering the API when multiple requests arrive simultaneously
+  if (forceRefresh && existingCache) {
+    const cacheEntry = cache.get(getCacheKey(symbol, timeframe));
+    const ageMs = cacheEntry ? Date.now() - cacheEntry.timestamp : Infinity;
+    if (ageMs < 5 * 60 * 1000) {
+      console.log(`[TwelveData] Cache fresh enough (${Math.round(ageMs / 1000)}s old), skipping API call for ${symbol} ${timeframe}`);
+      return existingCache;
     }
   }
 
@@ -179,28 +187,40 @@ export async function fetchOHLCV(
 // Uses a mutex so only one fetch cycle runs at a time. If a second call arrives
 // while a cycle is in progress, it waits for the first one and then returns
 // cached data (which the first cycle just populated).
+// Symbol used by the currently-running fetch cycle (needed by waiters to read the right cache keys)
+let activeFetchSymbol: string | null = null;
+
 export async function fetchAllTimeframes(
   symbol: string,
   forceRefresh = false
 ): Promise<Record<Timeframe, OHLCV[]>> {
-  // If another fetch cycle is already running, wait for it and return cache
+  const timeframes: Timeframe[] = ['5min', '15min', '30min', '1h', '4h'];
+
+  // If another fetch cycle is already running, wait for it and return its cache
   if (fetchLock) {
     console.log(`[TwelveData] Fetch cycle already in progress, waiting...`);
+    const symbolToRead = activeFetchSymbol || symbol;
     await fetchLock;
-    // The previous cycle should have populated the cache
+    // The previous cycle has fully populated the cache — read it now
     const cached: Partial<Record<Timeframe, OHLCV[]>> = {};
-    const timeframes: Timeframe[] = ['5min', '15min', '30min', '1h', '4h'];
     for (const tf of timeframes) {
-      cached[tf] = getCachedData(symbol, tf) || [];
+      const data = getCachedData(symbolToRead, tf);
+      if (data && data.length > 0) {
+        cached[tf] = data;
+      } else {
+        // Fallback: also try with the requested symbol key (in case keys differ)
+        cached[tf] = getCachedData(symbol, tf) || [];
+      }
     }
+    console.log(`[TwelveData] Waiter resolved — 5min: ${cached['5min']?.length ?? 0} candles from cache`);
     return cached as Record<Timeframe, OHLCV[]>;
   }
 
-  // Acquire lock
+  // Acquire lock and record which symbol is being fetched
   let releaseLock: () => void;
   fetchLock = new Promise<void>(resolve => { releaseLock = resolve; });
+  activeFetchSymbol = symbol;
 
-  const timeframes: Timeframe[] = ['5min', '15min', '30min', '1h', '4h'];
   const result: Partial<Record<Timeframe, OHLCV[]>> = {};
 
   try {
@@ -212,12 +232,13 @@ export async function fetchAllTimeframes(
         result[tf] = await fetchOHLCV(symbol, tf, forceRefresh);
       } catch (error) {
         console.error(`[TwelveData] Error fetching ${symbol} ${tf}:`, error);
-        // Try to use cached data as fallback
-        const cached = getCachedData(symbol, tf);
-        if (cached) {
-          console.log(`[TwelveData] Using stale cache for ${symbol} ${tf}`);
-          result[tf] = cached;
+        // Always fall back to cache — never return empty array for a TF
+        const stale = getCachedData(symbol, tf);
+        if (stale && stale.length > 0) {
+          console.log(`[TwelveData] Using stale cache for ${symbol} ${tf} (${stale.length} candles)`);
+          result[tf] = stale;
         } else {
+          console.warn(`[TwelveData] No cache available for ${symbol} ${tf} — returning empty`);
           result[tf] = [];
         }
       }
@@ -228,8 +249,9 @@ export async function fetchAllTimeframes(
       }
     }
   } finally {
-    // Release lock
+    // Release lock AFTER result is fully built
     fetchLock = null;
+    activeFetchSymbol = null;
     releaseLock!();
   }
 
