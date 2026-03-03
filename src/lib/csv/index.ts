@@ -305,10 +305,16 @@ export function runBacktest(weekKey?: string): BacktestResult {
 
     const tradeTime = new Date(trade.timestamp).getTime();
 
-    // Get candles after the trade signal
+    // Get candles STRICTLY AFTER the trade signal.
+    // The candle CSV contains historical data fetched from TwelveData at the
+    // moment the trade was detected. Those candles cover hours/days BEFORE the
+    // signal — they are NOT future price action. We must only evaluate candles
+    // whose datetime is strictly later than the trade timestamp + 5 min buffer
+    // (so we skip the candle during which the signal was generated).
+    const BUFFER_MS = 5 * 60 * 1000; // 5 minutes — one candle period
     const futureCandles = sortedCandles.filter(c => {
       const cTime = new Date(c.datetime.includes('T') ? c.datetime : c.datetime.replace(' ', 'T')).getTime();
-      return cTime >= tradeTime;
+      return cTime > tradeTime + BUFFER_MS;
     });
 
     let outcome: 'win' | 'loss' | 'open' = 'open';

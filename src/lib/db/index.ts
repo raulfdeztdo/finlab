@@ -6,7 +6,7 @@ import path from 'path';
 // SQLite Database - Singleton
 // ============================================
 
-const DB_PATH = path.join(process.cwd(), 'data', 'finlab.db');
+const DB_PATH = path.join(process.cwd(), 'data', 'db', 'finlab.db');
 
 let db: Database.Database | null = null;
 
