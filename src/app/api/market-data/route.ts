@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { runFullAnalysis } from '@/lib/signals/scoring';
 import { DEFAULT_SYMBOL } from '@/lib/config/symbols';
 import { getSession, findUserById, logApiRequest, logSuggestedActions } from '@/lib/db';
+import { appendTrades, appendCandles5min } from '@/lib/csv';
 
 export const dynamic = 'force-dynamic';
 
@@ -67,6 +68,27 @@ export async function GET(request: NextRequest) {
       }
     } catch (dbError) {
       console.error('[API] DB logging error (non-fatal):', dbError);
+    }
+
+    // Write to weekly CSV files (non-fatal)
+    try {
+      // Append detected trades (only actionable ones, not 'wait')
+      if (analysis.scalpingAnalysis && analysis.scalpingAnalysis.recommendations.length > 0) {
+        appendTrades(
+          symbol,
+          analysis.scalpingAnalysis.recommendations,
+          analysis.overallSignal.direction,
+          analysis.overallSignal.normalized,
+          analysis.timestamp
+        );
+      }
+
+      // Append 5min candles for backtesting
+      if (analysis.marketData?.candles?.['5min']?.length > 0) {
+        appendCandles5min(analysis.marketData.candles['5min']);
+      }
+    } catch (csvError) {
+      console.error('[API] CSV writing error (non-fatal):', csvError);
     }
 
     return NextResponse.json({

@@ -14,6 +14,7 @@ import ScalpingRecommendations from './ScalpingRecommendations';
 import ScheduleConfig from './ScheduleConfig';
 import UserManagement from './UserManagement';
 import HistoryPanel from './HistoryPanel';
+import BacktestingPanel from './BacktestingPanel';
 import { RefreshCw, AlertTriangle, Loader2, Activity, Settings, LogOut, Users, History, Bell, BellOff, Menu, X as XIcon } from 'lucide-react';
 
 interface UserInfo {
@@ -116,6 +117,7 @@ export default function Dashboard({ user }: { user: UserInfo }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const previousActionsRef = useRef<string>('');
+  const fetchInFlightRef = useRef(false);
 
   // Load schedule from localStorage
   useEffect(() => {
@@ -127,10 +129,13 @@ export default function Dashboard({ user }: { user: UserInfo }) {
   }, []);
 
   const fetchAnalysis = useCallback(async (refresh = false) => {
+    // Prevent concurrent fetches — if one is in flight, skip
+    if (fetchInFlightRef.current) return;
+    fetchInFlightRef.current = true;
+
     try {
       if (refresh) {
         setRefreshing(true);
-        await fetch('/api/signals', { method: 'POST' });
       } else {
         setLoading(true);
       }
@@ -142,7 +147,21 @@ export default function Dashboard({ user }: { user: UserInfo }) {
       if (data.success) {
         const newAnalysis = data.data as AnalysisResult;
 
-        // Persist to localStorage so F5 restores last data without API call
+        // Validate that key timeframes have data before accepting
+        const has5min = newAnalysis.timeframeAnalysis?.['5min']?.indicators &&
+          Object.keys(newAnalysis.timeframeAnalysis['5min'].indicators).length > 0;
+        const has15min = newAnalysis.timeframeAnalysis?.['15min']?.indicators &&
+          Object.keys(newAnalysis.timeframeAnalysis['15min'].indicators).length > 0;
+
+        if (!has5min && analysis?.timeframeAnalysis?.['5min']?.indicators &&
+            Object.keys(analysis.timeframeAnalysis['5min'].indicators).length > 0) {
+          // New data is missing 5min but we have it in current state — merge
+          console.warn('[Dashboard] New data missing 5min indicators, keeping previous 5min data');
+          newAnalysis.timeframeAnalysis['5min'] = analysis.timeframeAnalysis['5min'];
+        }
+
+        // Update state directly (no page reload)
+        setAnalysis(newAnalysis);
         saveCachedAnalysis(newAnalysis);
 
         // Check for actionable signals and send notification
@@ -162,20 +181,17 @@ export default function Dashboard({ user }: { user: UserInfo }) {
             }
           }
         }
-
-        // Reload page to reflect new data (also re-runs server-side auth check)
-        window.location.reload();
       } else {
         setError(data.error || 'Error al obtener datos');
-        setLoading(false);
-        setRefreshing(false);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error de red');
+    } finally {
       setLoading(false);
       setRefreshing(false);
+      fetchInFlightRef.current = false;
     }
-  }, [symbol, notificationsEnabled]);
+  }, [symbol, notificationsEnabled, analysis]);
 
   // No initial fetch on mount - only auto-refresh and manual button trigger API calls
   // This prevents unnecessary API calls on F5/page refresh
@@ -183,6 +199,7 @@ export default function Dashboard({ user }: { user: UserInfo }) {
   // Auto-refresh with configurable interval and schedule
   useEffect(() => {
     const timezone = 'Europe/Madrid';
+    let lastTriggerMinute = -1; // Prevents multiple triggers in the same interval minute
 
     const interval = window.setInterval(() => {
       const now = new Date();
@@ -207,9 +224,15 @@ export default function Dashboard({ user }: { user: UserInfo }) {
 
       setCountdown(`${displayMinutes}m ${displaySeconds}s`);
 
-      // Auto-refresh at interval marks (first 5s of the minute)
-      if (minutes % intervalMins === 0 && seconds < 5) {
+      // Auto-refresh at interval marks — ONCE per interval (first 3s of the minute)
+      if (minutes % intervalMins === 0 && seconds < 3 && lastTriggerMinute !== minutes) {
+        lastTriggerMinute = minutes;
         fetchAnalysis(true);
+      }
+
+      // Reset the guard when we're past the trigger window
+      if (minutes % intervalMins !== 0) {
+        lastTriggerMinute = -1;
       }
     }, 1000);
 
@@ -547,6 +570,9 @@ export default function Dashboard({ user }: { user: UserInfo }) {
 
         {/* Multi-Timeframe Table */}
         <TimeframeTable analyses={analysis.timeframeAnalysis} />
+
+        {/* Backtesting Semanal */}
+        <BacktestingPanel />
       </main>
 
       {/* Footer */}
