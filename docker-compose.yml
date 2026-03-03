@@ -1,0 +1,15 @@
+services:
+  finlab:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.local
+    environment:
+      - TZ=Europe/Madrid
+    restart: unless-stopped
+    volumes:
+      - finlab-cache:/app/data/cache
+
+volumes:
+  finlab-cache:
